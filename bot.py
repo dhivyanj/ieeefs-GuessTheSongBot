@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 
-load_dotenv()  # load variables from a .env file into the environment
+load_dotenv() #va va minnal
 
 token = os.getenv("DISCORD_TOKEN")
 geniusToken = os.getenv("GENIUS_TOKEN")
@@ -25,12 +25,6 @@ logging.basicConfig(level=logging.INFO)
 
 
 def validateConfig() -> bool:
-    """Validate configuration and return True if minimum config is present.
-
-    This does not raise; instead it logs errors/warnings and returns a
-    boolean so callers can decide how to proceed. The bot will only start
-    if `DISCORD_TOKEN` is present.
-    """
     ok = True
     if not token:
         logger.error("DISCORD_TOKEN not configured: bot will not start")
@@ -43,11 +37,6 @@ def validateConfig() -> bool:
 
 
 def getSpotifyAppToken(clientId: str, clientSecret: str) -> Optional[str]:
-    """Obtain a Spotify app access token using Client Credentials flow.
-
-    Returns `None` on error instead of raising, so callers can gracefully
-    degrade if Spotify is unavailable or credentials are missing.
-    """
     if not clientId or not clientSecret:
         logger.debug("Spotify credentials missing, skipping token request")
         return None
@@ -92,11 +81,60 @@ def searchSpotifyTrack(title: str, artist: str, appToken: str) -> Optional[str]:
     return items[0].get("external_urls", {}).get("spotify")
 
 
-def searchGenius(lyrics: str, token: str) -> Optional[dict]:
-    """Search Genius for lyrics snippet. Returns dict with title and artist and url.
+def parseSpotifyPlaylistId(urlOrId: str) -> Optional[str]:
+    if not urlOrId:
+        return None
+    s = urlOrId.strip()
+    if s.startswith("spotify:playlist:"):
+        return s.split(":", 2)[-1]
+    try:
+        p = urllib.parse.urlparse(s)
+        if p.hostname and "spotify" in p.hostname and p.path:
+            parts = p.path.strip("/").split("/")
+            if parts and parts[0] == "playlist":
+                return parts[1] if len(parts) > 1 else None
+    except Exception:
+        pass
+    if all(c.isalnum() or c in "_-" for c in s):
+        return s
+    return None
 
-    Returns `None` on error or when no results were found.
-    """
+
+def getSpotifyPlaylistTracks(playlist: str, accessToken: Optional[str] = None, limit: int = 20) -> Optional[list]:
+    playlistId = parseSpotifyPlaylistId(playlist)
+    if not playlistId:
+        return None
+    token = accessToken or getSpotifyAppToken(spotifyClientId, spotifyClientSecret)
+    if not token:
+        return None
+    url = f"https://api.spotify.com/v1/playlists/{playlistId}/tracks"
+    headers = {"Authorization": f"Bearer {token}"}
+    collected = []
+    params = {"limit": min(limit, 100), "offset": 0}
+    try:
+        while len(collected) < limit:
+            r = requests.get(url, headers=headers, params=params, timeout=10)
+            if r.status_code != 200:
+                logger.warning("Spotify playlist tracks returned status %s", r.status_code)
+                return None
+            data = r.json()
+            items = data.get("items", [])
+            if not items:
+                break
+            for it in items:
+                collected.append(it)
+                if len(collected) >= limit:
+                    break
+            if not data.get("next"):
+                break
+            params["offset"] += params["limit"]
+    except requests.RequestException:
+        logger.exception("Spotify playlist tracks request failed")
+        return None
+    return collected
+
+
+def searchGenius(lyrics: str, token: str) -> Optional[dict]:
     if not token:
         logger.debug("No Genius token configured, skipping Genius search")
         return None
@@ -122,16 +160,6 @@ def searchGenius(lyrics: str, token: str) -> Optional[dict]:
 
 
 def getGeniusLyricsFromUrl(url: str) -> Optional[str]:
-    """Scrape the Genius song page for lyrics.
-
-    Implementation notes:
-    - Prefers divs with `data-lyrics-container="true"` which Genius uses to
-      render lyrics fragments. Falls back to the legacy `.lyrics` container.
-    - Returns a plain-text string or `None` if extraction fails.
-    - Keep any returned snippet short when sending to Discord to avoid
-      reposting large amounts of copyrighted text; the command below only
-      exposes a short snippet and links back to the Genius page.
-    """
     try:
         r = requests.get(url, headers={"User-Agent": "lyrics-bot/1.0"}, timeout=10)
     except requests.RequestException:
@@ -142,13 +170,11 @@ def getGeniusLyricsFromUrl(url: str) -> Optional[str]:
         return None
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # Newer Genius markup uses multiple divs with data-lyrics-container="true".
     parts = soup.find_all("div", attrs={"data-lyrics-container": "true"})
     if parts:
         textParts = [p.get_text(separator="\n", strip=True) for p in parts]
         return "\n".join(textParts).strip()
 
-    # Fallback to legacy container
     legacy = soup.select_one(".lyrics")
     if legacy:
         return legacy.get_text(separator="\n", strip=True)
@@ -166,13 +192,13 @@ bot = commands.Bot(
 async def on_ready():
     print("Ready!")
     synced = await bot.tree.sync()
-    print(f"Synced {len(synced)} commands")
+    print(f"Synced {len(synced)} commands to use. watha ek aur baar bot add krna h aur koi easy method h kya?")
 
 
 @bot.tree.command(name="guess", description="Guess the song from lyrics (Genius + Spotify)")
 @app_commands.describe(lyrics="A short snippet of the lyrics to search for")
 async def guess(interaction: discord.Interaction, lyrics: str):
-    # Robustly try to defer; if the interaction is no longer valid, fall back
+    
     try:
         await interaction.response.defer()
         deferred = True
@@ -184,7 +210,6 @@ async def guess(interaction: discord.Interaction, lyrics: str):
 
     genius = searchGenius(lyrics, geniusToken)
     if not genius:
-        # If Genius is not configured or no results, inform the user politely.
         if deferred:
             await interaction.followup.send("No match found on Genius for that lyrics snippet.")
         else:
@@ -223,9 +248,48 @@ async def guess(interaction: discord.Interaction, lyrics: str):
             logger.exception("Unable to send response for /guess; no channel available")
 
 
+@bot.tree.command(name="playlist-tracks", description="Show tracks from a Spotify playlist URL or ID")
+@app_commands.describe(playlist="Spotify playlist URL or ID", limit="Number of tracks to show (max 100)")
+async def playlistTracks(interaction: discord.Interaction, playlist: str, limit: int = 10, access_token: Optional[str] = None):
+    try:
+        await interaction.response.defer(ephemeral=True)
+        deferred = True
+    except discord.NotFound:
+        deferred = False
+    except Exception:
+        raise
 
-# Ensure required configuration is present (graceful warnings for optional keys)
+    if limit < 1 or limit > 100:
+        limit = 10
+
+    tokenToUse = access_token or None
+    tracks = getSpotifyPlaylistTracks(playlist, tokenToUse, limit)
+    if tracks is None:
+        msg = "Could not fetch playlist tracks. Ensure the playlist is public and the ID/URL is correct."
+        if deferred:
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+        return
+
+    lines = []
+    for i, it in enumerate(tracks):
+        tr = it.get("track", {})
+        name = tr.get("name")
+        artists = ", ".join(a.get("name") for a in tr.get("artists", []))
+        link = tr.get("external_urls", {}).get("spotify")
+        lines.append(f"{i+1}. {name} — {artists} {link or ''}".strip())
+
+    out = "\n".join(lines) or "No tracks found."
+    if deferred:
+        await interaction.followup.send(out, ephemeral=True)
+    else:
+        await interaction.response.send_message(out, ephemeral=True)
+
 if validateConfig():
     bot.run(token)
 else:
     logger.info("Bot not started due to missing DISCORD_TOKEN; set it in .env to start the bot")
+"""
+ab tak jo h chala do, baki kal dekhte h 
+"""
