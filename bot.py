@@ -5,10 +5,11 @@ from typing import Optional
 
 import discord
 import requests
+from bs4 import BeautifulSoup
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import Button, View
-from button_utils import get_random_button_style
+#from button_utils import get_random_button_style
 
 
 with open("config.json") as f:
@@ -77,6 +78,39 @@ def _search_genius(lyrics: str, token: str) -> Optional[dict]:
     return {"title": title, "artist": artist, "genius_url": url}
 
 
+def _get_genius_lyrics_from_url(url: str) -> Optional[str]:
+    """Scrape the Genius song page for lyrics.
+
+    Implementation notes:
+    - Prefers divs with `data-lyrics-container="true"` which Genius uses to
+      render lyrics fragments. Falls back to the legacy `.lyrics` container.
+    - Returns a plain-text string or `None` if extraction fails.
+    - Keep any returned snippet short when sending to Discord to avoid
+      reposting large amounts of copyrighted text; the command below only
+      exposes a short snippet and links back to the Genius page.
+    """
+    try:
+        r = requests.get(url, headers={"User-Agent": "lyrics-bot/1.0"}, timeout=10)
+    except requests.RequestException:
+        return None
+    if r.status_code != 200:
+        return None
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    # Newer Genius markup uses multiple divs with data-lyrics-container="true".
+    parts = soup.find_all("div", attrs={"data-lyrics-container": "true"})
+    if parts:
+        text_parts = [p.get_text(separator="\n", strip=True) for p in parts]
+        return "\n".join(text_parts).strip()
+
+    # Fallback to legacy container
+    legacy = soup.select_one(".lyrics")
+    if legacy:
+        return legacy.get_text(separator="\n", strip=True)
+
+    return None
+
+
 _validate_config()
 
 bot = commands.Bot(
@@ -121,20 +155,39 @@ async def guess(interaction: discord.Interaction, lyrics: str):
     await interaction.followup.send(embed=embed)
 
 
-@bot.tree.command(name="colorbutton", description="Send a demo button with a random color style")
-async def colorbutton(interaction: discord.Interaction):
-    style = get_random_button_style()
-    button = Button(style=style, label="Click me")
+@bot.tree.command(name="lyrics", description="Fetch lyrics for a track (Genius). Returns a short snippet and link.")
+@app_commands.describe(query="Song title and/or artist to search for", url="Direct Genius song URL (optional)")
+async def lyrics(interaction: discord.Interaction, query: Optional[str] = None, url: Optional[str] = None):
+    await interaction.response.defer(ephemeral=True)
 
-    async def _callback(i: discord.Interaction):
-        button.disabled = True
-        await i.response.edit_message(view=view)
-        await i.followup.send("You clicked the button!")
+    if not query and not url:
+        await interaction.followup.send("Provide either `query` or `url` to fetch lyrics.", ephemeral=True)
+        return
 
-    button.callback = _callback
-    view = View()
-    view.add_item(button)
-    await interaction.response.send_message("Here's a random-colored button:", view=view)
+    target_url = url
+    if not target_url:
+        # Reuse search to find a likely Genius page
+        result = _search_genius(query or "", GENIUS_TOKEN)
+        if not result:
+            await interaction.followup.send("No match found on Genius for that query.", ephemeral=True)
+            return
+        target_url = result.get("genius_url")
+
+    lyrics_text = _get_genius_lyrics_from_url(target_url)
+    if not lyrics_text:
+        await interaction.followup.send("Could not extract lyrics from the Genius page.", ephemeral=True)
+        return
+
+    # Only show a short snippet to avoid posting long copyrighted text;
+    # link to Genius for the full lyrics.
+    snippet_len = 400
+    snippet = lyrics_text.strip()
+    if len(snippet) > snippet_len:
+        snippet = snippet[:snippet_len].rsplit("\n", 1)[0] + "..."
+
+    note = f"\n\nFull lyrics are available on Genius: {target_url}"
+    await interaction.followup.send(f"Lyrics snippet:\n{snippet}{note}", ephemeral=True)
+
 
 
 bot.run(TOKEN)
