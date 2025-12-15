@@ -9,7 +9,8 @@ import requests
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import Button, View
-from button_utils import get_random_button_style
+#from button_utils import get_random_button_style
+import logging
 
 
 load_dotenv()  # loads variables from a .env file into the environment
@@ -86,6 +87,8 @@ bot = commands.Bot(
     intents=discord.Intents.default(),
 )
 
+logger = logging.getLogger(__name__)
+
 
 @bot.event
 async def on_ready():
@@ -97,7 +100,14 @@ async def on_ready():
 @bot.tree.command(name="guess", description="Guess the song from lyrics (Genius + Spotify)")
 @app_commands.describe(lyrics="A short snippet of the lyrics to search for")
 async def guess(interaction: discord.Interaction, lyrics: str):
-    await interaction.response.defer()
+    try:
+        await interaction.response.defer()
+        deferred = True
+    except discord.NotFound:
+        logger.warning("Interaction not found when deferring in /guess; falling back to immediate response")
+        deferred = False
+    except Exception:
+        raise
     genius = _search_genius(lyrics, GENIUS_TOKEN)
     if not genius:
         await interaction.followup.send("No match found on Genius for that lyrics snippet.")
@@ -118,7 +128,22 @@ async def guess(interaction: discord.Interaction, lyrics: str):
     {('Spotify link: ' + spotify_url) if spotify_url else 'Spotify match not found.'}
     """)
     embed.description = desc
-    await interaction.followup.send(embed=embed)
+    # Prefer followup if we deferred; otherwise try an initial response, then channel fallback
+    if deferred:
+        try:
+            await interaction.followup.send(embed=embed)
+            return
+        except discord.NotFound:
+            logger.warning("Followup failed after defer in /guess; falling back to response.send_message")
+
+    try:
+        await interaction.response.send_message(embed=embed)
+    except Exception:
+        # Last resort: send directly to the channel if available
+        if interaction.channel:
+            await interaction.channel.send(embed=embed)
+        else:
+            logger.exception("Unable to send response for /guess; no channel available")
 
 
 @bot.tree.command(name="colorbutton", description="Send a demo button with a random color style")
