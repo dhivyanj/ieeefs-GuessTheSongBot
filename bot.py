@@ -10,19 +10,16 @@ from bs4 import BeautifulSoup
 import logging
 from discord import app_commands
 from discord.ext import commands
-from discord.ui import Button, View
-from button_utils import getRandomButtonStyle
 
 
 load_dotenv()  # load variables from a .env file into the environment
 
-# Use camelCase names for configuration variables
 token = os.getenv("DISCORD_TOKEN")
 geniusToken = os.getenv("GENIUS_TOKEN")
 spotifyClientId = os.getenv("SPOTIFY_CLIENT_ID")
 spotifyClientSecret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-# module logger
+#log pannuvom etha nollaiyayi pochi na
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -157,20 +154,6 @@ def getGeniusLyricsFromUrl(url: str) -> Optional[str]:
         return legacy.get_text(separator="\n", strip=True)
 
     return None
-
-load_dotenv()  # loads variables from a .env file into the environment
-
-# Use camelCase names for configuration variables
-token = os.getenv("DISCORD_TOKEN")
-geniusToken = os.getenv("GENIUS_TOKEN")
-spotifyClientId = os.getenv("SPOTIFY_CLIENT_ID")
-spotifyClientSecret = os.getenv("SPOTIFY_CLIENT_SECRET")
-
-# module logger
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
-
-
 bot = commands.Bot(
     command_prefix=None,
     help_command=None,
@@ -238,82 +221,6 @@ async def guess(interaction: discord.Interaction, lyrics: str):
             await interaction.channel.send(embed=embed)
         else:
             logger.exception("Unable to send response for /guess; no channel available")
-
-
-@bot.tree.command(name="lyrics", description="Fetch lyrics for a track (Genius). Returns a short snippet and link.")
-@app_commands.describe(query="Song title and/or artist to search for", url="Direct Genius song URL (optional)")
-async def lyrics(interaction: discord.Interaction, query: Optional[str] = None, url: Optional[str] = None):
-    # Robustly defer for ephemeral response
-    try:
-        await interaction.response.defer(ephemeral=True)
-        deferred = True
-    except discord.NotFound:
-        logger.warning("Interaction not found when deferring in /lyrics; falling back to immediate response")
-        deferred = False
-    except Exception:
-        raise
-
-    if not query and not url:
-        if deferred:
-            await interaction.followup.send("Provide either `query` or `url` to fetch lyrics.", ephemeral=True)
-        else:
-            await interaction.response.send_message("Provide either `query` or `url` to fetch lyrics.", ephemeral=True)
-        return
-
-    targetUrl = url
-    if not targetUrl:
-        # Reuse search to find a likely Genius page
-        result = searchGenius(query or "", geniusToken)
-        if not result:
-            if deferred:
-                await interaction.followup.send("No match found on Genius for that query.", ephemeral=True)
-            else:
-                await interaction.response.send_message("No match found on Genius for that query.", ephemeral=True)
-            return
-        targetUrl = result.get("genius_url")
-
-    lyricsText = getGeniusLyricsFromUrl(targetUrl)
-    if not lyricsText:
-        if deferred:
-            await interaction.followup.send("Could not extract lyrics from the Genius page.", ephemeral=True)
-        else:
-            await interaction.response.send_message("Could not extract lyrics from the Genius page.", ephemeral=True)
-        return
-
-    # Only show a short snippet to avoid posting long copyrighted text;
-    # link to Genius for the full lyrics.
-    snippetLen = 400
-    snippet = lyricsText.strip()
-    if len(snippet) > snippetLen:
-        snippet = snippet[:snippetLen].rsplit("\n", 1)[0] + "..."
-
-    note = f"\n\nFull lyrics are available on Genius: {targetUrl}"
-    if deferred:
-        await interaction.followup.send(f"Lyrics snippet:\n{snippet}{note}", ephemeral=True)
-    else:
-        await interaction.response.send_message(f"Lyrics snippet:\n{snippet}{note}", ephemeral=True)
-
-
-@bot.tree.command(name="colorbutton", description="Send a demo button with a random color style")
-async def colorbutton(interaction: discord.Interaction):
-    style = getRandomButtonStyle()
-    button = Button(style=style, label="Click me")
-
-    async def _callback(i: discord.Interaction):
-        button.disabled = True
-        await i.response.edit_message(view=view)
-        await i.followup.send("You clicked the button!")
-
-    button.callback = _callback
-    view = View()
-    view.add_item(button)
-    try:
-        await interaction.response.send_message("Here's a random-colored button:", view=view)
-    except Exception:
-        if interaction.channel:
-            await interaction.channel.send("Here's a random-colored button:",)
-        else:
-            logger.exception("Unable to send colorbutton response")
 
 
 
