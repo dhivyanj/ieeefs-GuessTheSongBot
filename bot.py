@@ -9,34 +9,23 @@ import requests
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import Button, View
-#from button_utils import get_random_button_style
+from button_utils import getRandomButtonStyle
 import logging
 
 
 load_dotenv()  # loads variables from a .env file into the environment
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-GENIUS_TOKEN = os.getenv("GENIUS_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+token = os.getenv("DISCORD_TOKEN")
+geniusToken = os.getenv("GENIUS_TOKEN")
+spotifyClientId = os.getenv("SPOTIFY_CLIENT_ID")
+spotifyClientSecret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 
-def _validate_config():
-    missing = []
-    if not TOKEN:
-        missing.append("DISCORD_TOKEN")
-    if not GENIUS_TOKEN:
-        missing.append("GENIUS_TOKEN")
-    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-        missing.append("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
-    if missing:
-        raise RuntimeError("Missing required config keys: " + ", ".join(missing))
 
-
-def _get_spotify_app_token(client_id: str, client_secret: str) -> Optional[str]:
+def _getSpotifyAppToken(clientId: str, clientSecret: str) -> Optional[str]:
     """Obtain a Spotify app access token using Client Credentials flow."""
     url = "https://accounts.spotify.com/api/token"
-    auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    auth = base64.b64encode(f"{clientId}:{clientSecret}".encode()).decode()
     headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"}
     data = {"grant_type": "client_credentials"}
     r = requests.post(url, headers=headers, data=data, timeout=10)
@@ -45,12 +34,12 @@ def _get_spotify_app_token(client_id: str, client_secret: str) -> Optional[str]:
     return r.json().get("access_token")
 
 
-def _search_spotify_track(title: str, artist: str, app_token: str) -> Optional[str]:
+def _searchSpotifyTrack(title: str, artist: str, appToken: str) -> Optional[str]:
     """Search Spotify for a track and return a Spotify track URL if found."""
     query = f"track:{title} artist:{artist}"
     url = "https://api.spotify.com/v1/search"
     params = {"q": query, "type": "track", "limit": 1}
-    headers = {"Authorization": f"Bearer {app_token}"}
+    headers = {"Authorization": f"Bearer {appToken}"}
     r = requests.get(url, headers=headers, params=params, timeout=10)
     if r.status_code != 200:
         return None
@@ -60,7 +49,7 @@ def _search_spotify_track(title: str, artist: str, app_token: str) -> Optional[s
     return items[0].get("external_urls", {}).get("spotify")
 
 
-def _search_genius(lyrics: str, token: str) -> Optional[dict]:
+def _searchGenius(lyrics: str, token: str) -> Optional[dict]:
     """Search Genius for lyrics snippet. Returns dict with title and artist and url."""
     url = "https://api.genius.com/search"
     headers = {"Authorization": f"Bearer {token}"}
@@ -78,7 +67,18 @@ def _search_genius(lyrics: str, token: str) -> Optional[dict]:
     return {"title": title, "artist": artist, "genius_url": url}
 
 
-_validate_config()
+def _validateConfig():
+    missing = []
+    if not token:
+        missing.append("DISCORD_TOKEN")
+    if not geniusToken:
+        missing.append("GENIUS_TOKEN")
+    if not spotifyClientId or not spotifyClientSecret:
+        missing.append("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
+    if missing:
+        raise RuntimeError("Missing required config keys: " + ", ".join(missing))
+
+_validateConfig()
 
 bot = commands.Bot(
     command_prefix=None,
@@ -108,24 +108,24 @@ async def guess(interaction: discord.Interaction, lyrics: str):
         deferred = False
     except Exception:
         raise
-    genius = _search_genius(lyrics, GENIUS_TOKEN)
+    genius = _searchGenius(lyrics, geniusToken)
     if not genius:
         await interaction.followup.send("No match found on Genius for that lyrics snippet.")
         return
 
     title = genius["title"]
     artist = genius["artist"]
-    genius_url = genius.get("genius_url")
+    geniusUrl = genius.get("genius_url")
 
-    spotify_token = _get_spotify_app_token(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
-    spotify_url = None
-    if spotify_token:
-        spotify_url = _search_spotify_track(title, artist, spotify_token)
+    spotifyToken = _getSpotifyAppToken(spotifyClientId, spotifyClientSecret)
+    spotifyUrl = None
+    if spotifyToken:
+        spotifyUrl = _searchSpotifyTrack(title, artist, spotifyToken)
 
     embed = discord.Embed(title=f"{title} — {artist}")
     desc = textwrap.dedent(f"""
-    Found a likely match on Genius: {genius_url}
-    {('Spotify link: ' + spotify_url) if spotify_url else 'Spotify match not found.'}
+    Found a likely match on Genius: {geniusUrl}
+    {( 'Spotify link: ' + spotifyUrl) if spotifyUrl else 'Spotify match not found.'}
     """)
     embed.description = desc
     # Prefer followup if we deferred; otherwise try an initial response, then channel fallback
@@ -148,7 +148,7 @@ async def guess(interaction: discord.Interaction, lyrics: str):
 
 @bot.tree.command(name="colorbutton", description="Send a demo button with a random color style")
 async def colorbutton(interaction: discord.Interaction):
-    style = get_random_button_style()
+    style = getRandomButtonStyle()
     button = Button(style=style, label="Click me")
 
     async def _callback(i: discord.Interaction):
@@ -162,4 +162,4 @@ async def colorbutton(interaction: discord.Interaction):
     await interaction.response.send_message("Here's a random-colored button:", view=view)
 
 
-bot.run(TOKEN)
+bot.run(token)
