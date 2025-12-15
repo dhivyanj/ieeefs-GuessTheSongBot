@@ -3,22 +3,22 @@
 Simple Discord bot that can guess a song from a snippet of lyrics by searching Genius and then looking up the matching track on Spotify (app-level search).
 
 ## Configuration
-Add the following keys to `config.json`:
+Create a `.env` file at the project root (or copy `.env.example`) with the following variables:
 
 - `DISCORD_TOKEN`: Your bot token (required)
 - `GENIUS_TOKEN`: Genius API token (required)
 - `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET`: Spotify app credentials (required)
 
-Example `config.json`:
+Example `.env`:
 
-```json
-{
-  "DISCORD_TOKEN": "your-discord-token",
-  "GENIUS_TOKEN": "your-genius-token",
-  "SPOTIFY_CLIENT_ID": "your-spotify-client-id",
-  "SPOTIFY_CLIENT_SECRET": "your-spotify-client-secret"
-}
+```env
+DISCORD_TOKEN=your-discord-token
+GENIUS_TOKEN=your-genius-token
+SPOTIFY_CLIENT_ID=your-spotify-client-id
+SPOTIFY_CLIENT_SECRET=your-spotify-client-secret
 ```
+
+Note: `.env` is ignored by git; keep your keys secret.
 
 ## Usage
 - Run `pip install -r requirements.txt` to install dependencies.
