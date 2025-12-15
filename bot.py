@@ -7,52 +7,87 @@ from dotenv import load_dotenv
 import discord
 import requests
 from bs4 import BeautifulSoup
+import logging
 from discord import app_commands
 from discord.ext import commands
 from discord.ui import Button, View
-#from button_utils import get_random_button_style
+from button_utils import getRandomButtonStyle
 
 
-load_dotenv()  # load variables from .env into the environment
+load_dotenv()  # load variables from a .env file into the environment
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-GENIUS_TOKEN = os.getenv("GENIUS_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+# Use camelCase names for configuration variables
+token = os.getenv("DISCORD_TOKEN")
+geniusToken = os.getenv("GENIUS_TOKEN")
+spotifyClientId = os.getenv("SPOTIFY_CLIENT_ID")
+spotifyClientSecret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-
-def _validate_config():
-    missing = []
-    if not TOKEN:
-        missing.append("DISCORD_TOKEN")
-    if not GENIUS_TOKEN:
-        missing.append("GENIUS_TOKEN")
-    if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
-        missing.append("SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
-    if missing:
-        raise RuntimeError("Missing required config keys: " + ", ".join(missing))
+# module logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 
-def _get_spotify_app_token(client_id: str, client_secret: str) -> Optional[str]:
-    """Obtain a Spotify app access token using Client Credentials flow."""
+def validateConfig() -> bool:
+    """Validate configuration and return True if minimum config is present.
+
+    This does not raise; instead it logs errors/warnings and returns a
+    boolean so callers can decide how to proceed. The bot will only start
+    if `DISCORD_TOKEN` is present.
+    """
+    ok = True
+    if not token:
+        logger.error("DISCORD_TOKEN not configured: bot will not start")
+        ok = False
+    if not geniusToken:
+        logger.warning("GENIUS_TOKEN not configured: /guess and /lyrics will be disabled")
+    if not spotifyClientId or not spotifyClientSecret:
+        logger.warning("Spotify client credentials not configured: Spotify lookups will be skipped")
+    return ok
+
+
+def getSpotifyAppToken(clientId: str, clientSecret: str) -> Optional[str]:
+    """Obtain a Spotify app access token using Client Credentials flow.
+
+    Returns `None` on error instead of raising, so callers can gracefully
+    degrade if Spotify is unavailable or credentials are missing.
+    """
+    if not clientId or not clientSecret:
+        logger.debug("Spotify credentials missing, skipping token request")
+        return None
     url = "https://accounts.spotify.com/api/token"
-    auth = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    auth = base64.b64encode(f"{clientId}:{clientSecret}".encode()).decode()
     headers = {"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"}
     data = {"grant_type": "client_credentials"}
-    r = requests.post(url, headers=headers, data=data, timeout=10)
+    try:
+        r = requests.post(url, headers=headers, data=data, timeout=10)
+    except requests.RequestException:
+        logger.exception("Failed to obtain Spotify app token")
+        return None
     if r.status_code != 200:
+        logger.warning("Spotify token request returned status %s", r.status_code)
         return None
     return r.json().get("access_token")
 
 
-def _search_spotify_track(title: str, artist: str, app_token: str) -> Optional[str]:
-    """Search Spotify for a track and return a Spotify track URL if found."""
+def searchSpotifyTrack(title: str, artist: str, appToken: str) -> Optional[str]:
+    """Search Spotify for a track and return a Spotify track URL if found.
+
+    Returns `None` on error or when no match is found.
+    """
+    if not appToken:
+        logger.debug("No Spotify app token available, skipping Spotify search")
+        return None
     query = f"track:{title} artist:{artist}"
     url = "https://api.spotify.com/v1/search"
     params = {"q": query, "type": "track", "limit": 1}
-    headers = {"Authorization": f"Bearer {app_token}"}
-    r = requests.get(url, headers=headers, params=params, timeout=10)
+    headers = {"Authorization": f"Bearer {appToken}"}
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+    except requests.RequestException:
+        logger.exception("Spotify search request failed")
+        return None
     if r.status_code != 200:
+        logger.warning("Spotify search returned status %s", r.status_code)
         return None
     items = r.json().get("tracks", {}).get("items", [])
     if not items:
@@ -60,13 +95,24 @@ def _search_spotify_track(title: str, artist: str, app_token: str) -> Optional[s
     return items[0].get("external_urls", {}).get("spotify")
 
 
-def _search_genius(lyrics: str, token: str) -> Optional[dict]:
-    """Search Genius for lyrics snippet. Returns dict with title and artist and url."""
+def searchGenius(lyrics: str, token: str) -> Optional[dict]:
+    """Search Genius for lyrics snippet. Returns dict with title and artist and url.
+
+    Returns `None` on error or when no results were found.
+    """
+    if not token:
+        logger.debug("No Genius token configured, skipping Genius search")
+        return None
     url = "https://api.genius.com/search"
     headers = {"Authorization": f"Bearer {token}"}
     params = {"q": lyrics}
-    r = requests.get(url, headers=headers, params=params, timeout=10)
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+    except requests.RequestException:
+        logger.exception("Genius search request failed")
+        return None
     if r.status_code != 200:
+        logger.warning("Genius search returned status %s", r.status_code)
         return None
     hits = r.json().get("response", {}).get("hits", [])
     if not hits:
@@ -78,7 +124,7 @@ def _search_genius(lyrics: str, token: str) -> Optional[dict]:
     return {"title": title, "artist": artist, "genius_url": url}
 
 
-def _get_genius_lyrics_from_url(url: str) -> Optional[str]:
+def getGeniusLyricsFromUrl(url: str) -> Optional[str]:
     """Scrape the Genius song page for lyrics.
 
     Implementation notes:
@@ -92,16 +138,18 @@ def _get_genius_lyrics_from_url(url: str) -> Optional[str]:
     try:
         r = requests.get(url, headers={"User-Agent": "lyrics-bot/1.0"}, timeout=10)
     except requests.RequestException:
+        logger.exception("Failed to fetch Genius page for lyrics")
         return None
     if r.status_code != 200:
+        logger.warning("Genius lyrics page returned status %s", r.status_code)
         return None
     soup = BeautifulSoup(r.text, "html.parser")
 
     # Newer Genius markup uses multiple divs with data-lyrics-container="true".
     parts = soup.find_all("div", attrs={"data-lyrics-container": "true"})
     if parts:
-        text_parts = [p.get_text(separator="\n", strip=True) for p in parts]
-        return "\n".join(text_parts).strip()
+        textParts = [p.get_text(separator="\n", strip=True) for p in parts]
+        return "\n".join(textParts).strip()
 
     # Fallback to legacy container
     legacy = soup.select_one(".lyrics")
@@ -110,8 +158,18 @@ def _get_genius_lyrics_from_url(url: str) -> Optional[str]:
 
     return None
 
+load_dotenv()  # loads variables from a .env file into the environment
 
-_validate_config()
+# Use camelCase names for configuration variables
+token = os.getenv("DISCORD_TOKEN")
+geniusToken = os.getenv("GENIUS_TOKEN")
+spotifyClientId = os.getenv("SPOTIFY_CLIENT_ID")
+spotifyClientSecret = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+# module logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 
 bot = commands.Bot(
     command_prefix=None,
@@ -131,63 +189,136 @@ async def on_ready():
 @bot.tree.command(name="guess", description="Guess the song from lyrics (Genius + Spotify)")
 @app_commands.describe(lyrics="A short snippet of the lyrics to search for")
 async def guess(interaction: discord.Interaction, lyrics: str):
-    await interaction.response.defer()
-    genius = _search_genius(lyrics, GENIUS_TOKEN)
+    # Robustly try to defer; if the interaction is no longer valid, fall back
+    try:
+        await interaction.response.defer()
+        deferred = True
+    except discord.NotFound:
+        logger.warning("Interaction not found when deferring in /guess; falling back to immediate response")
+        deferred = False
+    except Exception:
+        raise
+
+    genius = searchGenius(lyrics, geniusToken)
     if not genius:
-        await interaction.followup.send("No match found on Genius for that lyrics snippet.")
+        # If Genius is not configured or no results, inform the user politely.
+        if deferred:
+            await interaction.followup.send("No match found on Genius for that lyrics snippet.")
+        else:
+            await interaction.response.send_message("No match found on Genius for that lyrics snippet.")
         return
 
     title = genius["title"]
     artist = genius["artist"]
-    genius_url = genius.get("genius_url")
+    geniusUrl = genius.get("genius_url")
 
-    spotify_token = _get_spotify_app_token(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET)
-    spotify_url = None
-    if spotify_token:
-        spotify_url = _search_spotify_track(title, artist, spotify_token)
+    spotifyToken = getSpotifyAppToken(spotifyClientId, spotifyClientSecret)
+    spotifyUrl = None
+    if spotifyToken:
+        spotifyUrl = searchSpotifyTrack(title, artist, spotifyToken)
 
     embed = discord.Embed(title=f"{title} — {artist}")
     desc = textwrap.dedent(f"""
-    Found a likely match on Genius: {genius_url}
-    {('Spotify link: ' + spotify_url) if spotify_url else 'Spotify match not found.'}
+    Found a likely match on Genius: {geniusUrl}
+    {( 'Spotify link: ' + spotifyUrl) if spotifyUrl else 'Spotify match not found.'}
     """)
     embed.description = desc
-    await interaction.followup.send(embed=embed)
+
+    if deferred:
+        try:
+            await interaction.followup.send(embed=embed)
+            return
+        except discord.NotFound:
+            logger.warning("Followup failed after defer in /guess; falling back to response.send_message")
+
+    try:
+        await interaction.response.send_message(embed=embed)
+    except Exception:
+        if interaction.channel:
+            await interaction.channel.send(embed=embed)
+        else:
+            logger.exception("Unable to send response for /guess; no channel available")
 
 
 @bot.tree.command(name="lyrics", description="Fetch lyrics for a track (Genius). Returns a short snippet and link.")
 @app_commands.describe(query="Song title and/or artist to search for", url="Direct Genius song URL (optional)")
 async def lyrics(interaction: discord.Interaction, query: Optional[str] = None, url: Optional[str] = None):
-    await interaction.response.defer(ephemeral=True)
+    # Robustly defer for ephemeral response
+    try:
+        await interaction.response.defer(ephemeral=True)
+        deferred = True
+    except discord.NotFound:
+        logger.warning("Interaction not found when deferring in /lyrics; falling back to immediate response")
+        deferred = False
+    except Exception:
+        raise
 
     if not query and not url:
-        await interaction.followup.send("Provide either `query` or `url` to fetch lyrics.", ephemeral=True)
+        if deferred:
+            await interaction.followup.send("Provide either `query` or `url` to fetch lyrics.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Provide either `query` or `url` to fetch lyrics.", ephemeral=True)
         return
 
-    target_url = url
-    if not target_url:
+    targetUrl = url
+    if not targetUrl:
         # Reuse search to find a likely Genius page
-        result = _search_genius(query or "", GENIUS_TOKEN)
+        result = searchGenius(query or "", geniusToken)
         if not result:
-            await interaction.followup.send("No match found on Genius for that query.", ephemeral=True)
+            if deferred:
+                await interaction.followup.send("No match found on Genius for that query.", ephemeral=True)
+            else:
+                await interaction.response.send_message("No match found on Genius for that query.", ephemeral=True)
             return
-        target_url = result.get("genius_url")
+        targetUrl = result.get("genius_url")
 
-    lyrics_text = _get_genius_lyrics_from_url(target_url)
-    if not lyrics_text:
-        await interaction.followup.send("Could not extract lyrics from the Genius page.", ephemeral=True)
+    lyricsText = getGeniusLyricsFromUrl(targetUrl)
+    if not lyricsText:
+        if deferred:
+            await interaction.followup.send("Could not extract lyrics from the Genius page.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Could not extract lyrics from the Genius page.", ephemeral=True)
         return
 
     # Only show a short snippet to avoid posting long copyrighted text;
     # link to Genius for the full lyrics.
-    snippet_len = 400
-    snippet = lyrics_text.strip()
-    if len(snippet) > snippet_len:
-        snippet = snippet[:snippet_len].rsplit("\n", 1)[0] + "..."
+    snippetLen = 400
+    snippet = lyricsText.strip()
+    if len(snippet) > snippetLen:
+        snippet = snippet[:snippetLen].rsplit("\n", 1)[0] + "..."
 
-    note = f"\n\nFull lyrics are available on Genius: {target_url}"
-    await interaction.followup.send(f"Lyrics snippet:\n{snippet}{note}", ephemeral=True)
+    note = f"\n\nFull lyrics are available on Genius: {targetUrl}"
+    if deferred:
+        await interaction.followup.send(f"Lyrics snippet:\n{snippet}{note}", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"Lyrics snippet:\n{snippet}{note}", ephemeral=True)
+
+
+@bot.tree.command(name="colorbutton", description="Send a demo button with a random color style")
+async def colorbutton(interaction: discord.Interaction):
+    style = getRandomButtonStyle()
+    button = Button(style=style, label="Click me")
+
+    async def _callback(i: discord.Interaction):
+        button.disabled = True
+        await i.response.edit_message(view=view)
+        await i.followup.send("You clicked the button!")
+
+    button.callback = _callback
+    view = View()
+    view.add_item(button)
+    try:
+        await interaction.response.send_message("Here's a random-colored button:", view=view)
+    except Exception:
+        if interaction.channel:
+            await interaction.channel.send("Here's a random-colored button:",)
+        else:
+            logger.exception("Unable to send colorbutton response")
 
 
 
-bot.run(TOKEN)
+# Ensure required configuration is present (graceful warnings for optional keys)
+if validateConfig():
+    bot.run(token)
+else:
+    logger.info("Bot not started due to missing DISCORD_TOKEN; set it in .env to start the bot")
