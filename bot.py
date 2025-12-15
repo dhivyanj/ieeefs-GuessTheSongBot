@@ -1,7 +1,8 @@
 import base64
-import json
+import os
 import textwrap
 from typing import Optional
+from dotenv import load_dotenv
 
 import discord
 import requests
@@ -12,13 +13,12 @@ from discord.ui import Button, View
 #from button_utils import get_random_button_style
 
 
-with open("config.json") as f:
-    config = json.load(f)
+load_dotenv()  # load variables from .env into the environment
 
-TOKEN = config.get("DISCORD_TOKEN")
-GENIUS_TOKEN = config.get("GENIUS_TOKEN")
-SPOTIFY_CLIENT_ID = config.get("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = config.get("SPOTIFY_CLIENT_SECRET")
+TOKEN = os.getenv("DISCORD_TOKEN")
+GENIUS_TOKEN = os.getenv("GENIUS_TOKEN")
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 
 def _validate_config():
